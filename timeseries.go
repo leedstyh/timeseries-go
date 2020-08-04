@@ -47,7 +47,7 @@ func (ts TimeSeries) writeCsv(path string) error {
 	return nil
 }
 
-func (ts TimeSeries) writeJson(path string) error {
+func (ts TimeSeries) writeJSON(path string) error {
 	filename := filepath.Join(path, ts.Start().String()[:len(ts.Start().String())-10]+" "+ts.End().String()[:len(ts.Start().String())-10]+".json")
 	f, err := os.Create(filename)
 	if err != nil {
@@ -67,7 +67,9 @@ func (ts TimeSeries) writeJson(path string) error {
 	return nil
 }
 
-func (ts TimeSeries) WriteAsJson(folderpath string, pageSize ...int) error {
+//WriteAsJSON writes to a folderpath in batches of pagesize. if pagesize not provided
+//it will write as a single file
+func (ts TimeSeries) WriteAsJSON(folderpath string, pageSize ...int) error {
 	_, err := os.Stat(folderpath)
 	if err != nil {
 		err := os.Mkdir(folderpath, 0766)
@@ -76,11 +78,11 @@ func (ts TimeSeries) WriteAsJson(folderpath string, pageSize ...int) error {
 		}
 	}
 	if pageSize == nil {
-		ts.writeJson(folderpath)
+		ts.writeJSON(folderpath)
 	} else {
 		tsSplit := ts.SplitByBatchSize(pageSize[0])
 		for _, t := range tsSplit {
-			t.writeJson(folderpath)
+			t.writeJSON(folderpath)
 		}
 	}
 	return nil
@@ -135,6 +137,7 @@ func (ts TimeSeries) Interval() time.Duration {
 	return ts.Index[1].Sub(ts.Index[0])
 }
 
+//IsEmpty returns true if no elements in timeseries
 func (ts TimeSeries) IsEmpty() bool {
 	if ts.Length() == 0 {
 		return true
