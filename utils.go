@@ -63,7 +63,7 @@ func isFloat(num string) bool {
 func parseDate(datetime string) (time.Time, error) {
 	var d, t string
 	datetime = strings.Split(strings.Replace(datetime, "T", " ", 1), "+")[0]
-	datetimeSplit := strings.Split(datetime, " ")
+	datetimeSplit := strings.Split(datetime, " ")[:2]
 	if len(datetimeSplit) != 1 && len(datetimeSplit) != 2 {
 		return time.Time{}, fmt.Errorf("could not find time OR date in provided string %v", datetime)
 	} else if len(datetimeSplit) == 1 {

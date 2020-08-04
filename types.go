@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -82,7 +83,7 @@ type generic struct {
 }
 
 //split for nested column json
-type split struct {
+type split1 struct {
 	Date    []string             `json:"timestamp"`
 	Columns map[string][]float64 `json:"columns"`
 }
@@ -93,23 +94,46 @@ type split0 struct {
 	Columns map[string][]float64 `json:"Columns"`
 }
 
+type split struct {
+	Date    []string             `json:"index"`
+	Columns map[string][]float64 `json:"columns"`
+}
+
+//DataPoint holds a single point of data
+type DataPoint struct {
+	Index   time.Time
+	Columns map[string]float64
+}
+
+//DataPointArray holds an array of `DataPoint`
+type DataPointArray []DataPoint
+
+type changelog struct {
+	operation      string
+	index          time.Time
+	indexFrom      time.Time
+	indexTo        time.Time
+	commitedToDisk bool
+}
+
 //TimeSeries one time Index and a map of Columns. Central datastruct
 type TimeSeries struct {
-	Index   []time.Time
+	Index   []time.Time `json:"index"`
 	Columns map[string][]float64
 	MaxSize int64
 	Meta    map[string]string
+	changes []changelog
 }
 
 //NewTimeSeries returns empty `TimeSeries`
 func NewTimeSeries() TimeSeries {
-	return TimeSeries{make([]time.Time, 0), make(map[string][]float64), 0, make(map[string]string)}
+	return TimeSeries{make([]time.Time, 0), make(map[string][]float64), 0, make(map[string]string), make([]changelog, 0)}
 }
 
 //NewTimeSeriesFromGetter reads a `TableGetter` if no TableGetter provided, then will return empty TimeSeries
 func NewTimeSeriesFromGetter(ts ...TableGetter) TimeSeries {
 	var err error
-	emptyts := TimeSeries{make([]time.Time, 0), make(map[string][]float64), 0, make(map[string]string)}
+	emptyts := TimeSeries{make([]time.Time, 0), make(map[string][]float64), 0, make(map[string]string), make([]changelog, 0)}
 	if ts == nil {
 		return emptyts
 	}
@@ -132,13 +156,12 @@ func NewTimeSeriesFromFile(filepath string, sourceSchema ...string) (TimeSeries,
 	var schema string
 	ts := NewTimeSeries()
 	if sourceSchema == nil {
-		if filepath[len(filepath)-4:] == ".csv" {
-			schema = "auto"
-		} else {
-			schema = "generic"
-		}
+		schema = "split"
 	} else {
 		schema = sourceSchema[0]
+	}
+	if filepath[len(filepath)-4:] == ".csv" {
+		schema = "auto"
 	}
 	file, err := ioutil.ReadFile(filepath)
 	if err != nil {
@@ -184,6 +207,7 @@ func NewTimeSeriesFromFile(filepath string, sourceSchema ...string) (TimeSeries,
 			columnNames, err := csvdata.Read()
 			var indexCol int
 			for index, col := range columnNames {
+				columnNames[index] = strings.ToLower(col)
 				if strings.Contains(col, "date") || strings.Contains(col, "time") {
 					indexCol = index
 					break
@@ -202,6 +226,9 @@ func NewTimeSeriesFromFile(filepath string, sourceSchema ...string) (TimeSeries,
 						}
 						ts.Index = append(ts.Index, datapoint)
 					} else {
+						if columns[i][j] == "" {
+							continue
+						}
 						datapoint, err := strconv.ParseFloat(columns[i][j], 64)
 						if err != nil {
 							logrus.Errorln("float parse failed while loading timeseries from file: ", err)
@@ -258,11 +285,50 @@ func NewTimeSeriesFromFile(filepath string, sourceSchema ...string) (TimeSeries,
 			}
 			ts.Index = index
 			ts.Columns = data.Columns
+		} else if schema == "split1" {
+			var data split1
+			json.Unmarshal(file, &data)
+			index, err := parseDateArray(data.Date)
+			if err != nil {
+				logrus.Errorln("date parse failed while loading timeseries from file: ", err)
+			}
+			ts.Index = index
+			ts.Columns = data.Columns
 		}
 	}
 	if ts.Length() == 0 {
 		logrus.Errorln("load failed, probably wrong schema provided")
 		return ts, fmt.Errorf("load failed, probably wrong schema provided")
+	}
+	return ts, nil
+}
+
+//NewTimeSeriesFromDirectory reads entire directory
+func NewTimeSeriesFromDirectory(directory string, sourceSchema ...string) (TimeSeries, error) {
+	files, err := ioutil.ReadDir(directory)
+	if err != nil {
+		return NewTimeSeries(), err
+	}
+	var schema string
+	if sourceSchema == nil {
+		schema = "split"
+	} else {
+		schema = sourceSchema[0]
+	}
+	ts := NewTimeSeries()
+	for _, f := range files {
+		fullpath := filepath.Join(directory, f.Name())
+		if fullpath[len(fullpath)-4:] != "json" && fullpath[len(fullpath)-3:] != "csv" {
+			continue
+		}
+		presentRead, err := NewTimeSeriesFromFile(fullpath, schema)
+		if err != nil {
+			return NewTimeSeries(), err
+		}
+		ts, err = ts.Append(presentRead)
+		if err != nil {
+			return NewTimeSeries(), err
+		}
 	}
 	return ts, nil
 }
@@ -287,4 +353,30 @@ func NewTimeSeriesFromData(timeindex interface{}, columns map[string][]float64) 
 		ts.Columns[name] = data
 	}
 	return ts, nil
+}
+
+//NewDataPoint creates new datapoint
+func NewDataPoint() DataPoint {
+	return DataPoint{time.Time{}, make(map[string]float64, 0)}
+}
+
+//NewDataPointFromData uses arguments to build a datapoint
+func NewDataPointFromData(timeindex interface{}, columns map[string]float64) DataPoint {
+	dp := NewDataPoint()
+	switch timeindex.(type) {
+	case time.Time:
+		dp.Index = timeindex.(time.Time)
+	case string:
+		t, err := parseDate(timeindex.(string))
+		if err != nil {
+			log.Warn("datapoint creation warning: could not parse time ", err)
+		}
+		dp.Index = t
+	default:
+		log.Warnf("datapoint creation warning: invalid type for timeindex `%T`\n", timeindex)
+	}
+	for k, v := range columns {
+		dp.Columns[k] = v
+	}
+	return dp
 }

@@ -1,10 +1,14 @@
 package timeseries
 
 import (
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/jedib0t/go-pretty/table"
@@ -18,6 +22,88 @@ func (ts TimeSeries) WriteToSetter(dst TableSetter) TableSetter {
 		dst.Set(k, v)
 	}
 	return dst
+}
+
+//utility func
+func (ts TimeSeries) writeCsv(path string) error {
+	filename := filepath.Join(path, ts.Start().String()[:len(ts.Start().String())-10]+" "+ts.End().String()[:len(ts.Start().String())-10]+".csv")
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	writer := csv.NewWriter(f)
+	defer f.Close()
+	defer writer.Flush()
+	columns := append([]string{"timestamp"}, ts.ListColumns()...)
+	writer.Write(columns)
+	for i, t := range ts.Index {
+		datapoint := make([]string, 0)
+		datapoint = append(datapoint, t.String()[:len(t.String())-10])
+		for _, col := range columns[1:] {
+			datapoint = append(datapoint, strconv.FormatFloat(ts.Columns[col][i], 'f', 5, 64))
+		}
+		writer.Write(datapoint)
+	}
+	return nil
+}
+
+func (ts TimeSeries) writeJson(path string) error {
+	filename := filepath.Join(path, ts.Start().String()[:len(ts.Start().String())-10]+" "+ts.End().String()[:len(ts.Start().String())-10]+".json")
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	defer f.Sync()
+	data := split1{make([]string, 0), ts.Columns}
+	for _, d := range ts.Index {
+		data.Date = append(data.Date, d.String()[:len(d.String())-10])
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	f.Write(jsonData)
+	return nil
+}
+
+func (ts TimeSeries) WriteAsJson(folderpath string, pageSize ...int) error {
+	_, err := os.Stat(folderpath)
+	if err != nil {
+		err := os.Mkdir(folderpath, 0766)
+		if err != nil {
+			return err
+		}
+	}
+	if pageSize == nil {
+		ts.writeJson(folderpath)
+	} else {
+		tsSplit := ts.SplitByBatchSize(pageSize[0])
+		for _, t := range tsSplit {
+			t.writeJson(folderpath)
+		}
+	}
+	return nil
+}
+
+//WriteAsCsv writes timeseries to disk as csv
+func (ts TimeSeries) WriteAsCsv(folderpath string, pageSize ...int) error {
+	_, err := os.Stat(folderpath)
+	if err != nil {
+		err := os.Mkdir(folderpath, 0766)
+		if err != nil {
+			return err
+		}
+	}
+	if pageSize == nil {
+		ts.writeCsv(folderpath)
+	} else {
+		tsSplit := ts.SplitByBatchSize(pageSize[0])
+		for _, t := range tsSplit {
+			t.writeCsv(folderpath)
+		}
+	}
+	return nil
 }
 
 //ListColumns returns all numeric columns
@@ -49,6 +135,13 @@ func (ts TimeSeries) Interval() time.Duration {
 	return ts.Index[1].Sub(ts.Index[0])
 }
 
+func (ts TimeSeries) IsEmpty() bool {
+	if ts.Length() == 0 {
+		return true
+	}
+	return false
+}
+
 //Validate equal lengths of all columns
 func (ts TimeSeries) Validate() error {
 	for k := range ts.Columns {
@@ -69,17 +162,53 @@ func (ts TimeSeries) Validate() error {
 	return nil
 }
 
-//Sort by index
-func (ts TimeSeries) Sort() TimeSeries {
-	sort.Slice(ts.Index, func(i, j int) bool {
-		if ts.Index[j].Before(ts.Index[i]) {
-			for _, v := range ts.Columns {
-				v[i], v[j] = v[j], v[i]
-			}
+//Swap two indices
+func (ts *TimeSeries) Swap(i, j int) {
+	ts.Index[i], ts.Index[j] = ts.Index[j], ts.Index[i]
+	for k := range ts.Columns {
+		ts.Columns[k][i], ts.Columns[k][j] = ts.Columns[k][j], ts.Columns[k][i]
+	}
+}
+
+//ConvertToDataPointArray converts TimeSeries to DataPointArray
+func (ts TimeSeries) ConvertToDataPointArray() DataPointArray {
+	dpa := make(DataPointArray, 0)
+	for i := range ts.Index {
+		dp := NewDataPoint()
+		dp.Index = ts.Index[i]
+		for k := range ts.Columns {
+			dp.Columns[k] = ts.Columns[k][i]
 		}
-		return ts.Index[j].Before(ts.Index[i])
-	})
+		dpa = append(dpa, dp)
+	}
+	return dpa
+}
+
+//ConvertToTimeSeries converts a datapointarray to timeseries
+func (dpa DataPointArray) ConvertToTimeSeries() TimeSeries {
+	ts := NewTimeSeries()
+	for i := range dpa {
+		ts.Index = append(ts.Index, dpa[i].Index)
+		for k, v := range dpa[i].Columns {
+			ts.Columns[k] = append(ts.Columns[k], v)
+		}
+	}
 	return ts
+}
+
+//Sort a `TimeSeries`, if no by provided, sort by index
+func (ts TimeSeries) Sort(by ...string) TimeSeries {
+	dpa := ts.ConvertToDataPointArray()
+	if by == nil {
+		sort.Slice(dpa, func(i, j int) bool {
+			return dpa[i].Index.Before(dpa[j].Index)
+		})
+	} else {
+		sort.Slice(dpa, func(i, j int) bool {
+			return dpa[i].Columns[by[0]] < dpa[j].Columns[by[0]]
+		})
+	}
+	return dpa.ConvertToTimeSeries()
 }
 
 //Resample converts source timeseries interval into different interval using criteria provided
@@ -126,7 +255,7 @@ func (ts TimeSeries) Resample(interval string, criteriaMap ...map[string]string)
 }
 
 //Split separates by interval. for ex:-Split("1day") would yield an array of `TimeSeries` at day level
-func (ts TimeSeries) Split(interval string) ([]TimeSeries, error) {
+func (ts TimeSeries) Split(interval string) []TimeSeries {
 	var splitList []TimeSeries
 	duration, _ := parseInterval(interval)
 	batchHeadIndex := 0
@@ -151,11 +280,11 @@ func (ts TimeSeries) Split(interval string) ([]TimeSeries, error) {
 			}
 		}
 	}
-	return splitList, nil
+	return splitList
 }
 
 //SplitByBatchSize splits `TimeSeries` into array of `TimeSeries` where each has `batchsize` elements
-func (ts TimeSeries) SplitByBatchSize(batchsize int) ([]TimeSeries, error) {
+func (ts TimeSeries) SplitByBatchSize(batchsize int) []TimeSeries {
 	var splitList []TimeSeries
 	for k := 0; k < ts.Length(); k = k + batchsize {
 		splitTs := NewTimeSeries()
@@ -166,11 +295,11 @@ func (ts TimeSeries) SplitByBatchSize(batchsize int) ([]TimeSeries, error) {
 		}
 		splitList = append(splitList, splitTs)
 	}
-	return splitList, nil
+	return splitList
 }
 
 //SplitByDay splits `TimeSeries` into array of `TimeSeries` where each element contains data for a single day
-func (ts TimeSeries) SplitByDay() ([]TimeSeries, error) {
+func (ts TimeSeries) SplitByDay() []TimeSeries {
 	var splitList []TimeSeries
 	startIndex := 0
 	splitTs := NewTimeSeries()
@@ -195,7 +324,7 @@ func (ts TimeSeries) SplitByDay() ([]TimeSeries, error) {
 		}
 
 	}
-	return splitList, nil
+	return splitList
 }
 
 //Slice can slice either by integer or time.Time
@@ -283,6 +412,9 @@ func (ts TimeSeries) Slice(lower, upper interface{}) (TimeSeries, error) {
 
 //Append 2 timeseries together
 func (ts TimeSeries) Append(ts1 TimeSeries) (TimeSeries, error) {
+	if ts.IsEmpty() {
+		return ts1, nil
+	}
 	ts.Index = append(ts.Index, ts1.Index...)
 	if ts.Start().After(ts1.Start()) {
 		log.Errorf("Append failed: ts2 is before ts1")
@@ -299,6 +431,22 @@ func (ts TimeSeries) Append(ts1 TimeSeries) (TimeSeries, error) {
 		if !ok {
 			return ts, fmt.Errorf("Append failed: column `%s` in ts1 but not in ts2", col)
 		}
+	}
+	return ts, ts.Validate()
+}
+
+//AppendDataPoint to timeseries at end
+func (ts TimeSeries) AppendDataPoint(dp DataPoint) (TimeSeries, error) {
+	ts.Index = append(ts.Index, dp.Index)
+	cols := ts.ListColumns()
+	for k := range dp.Columns {
+		if !aInB(k, cols) {
+			return ts, fmt.Errorf("failed to append datapoint to timeseries: field mismatch %v", k)
+		}
+	}
+	for k, v := range dp.Columns {
+		ts.Columns[k] = append(ts.Columns[k], v)
+
 	}
 	return ts, ts.Validate()
 }
