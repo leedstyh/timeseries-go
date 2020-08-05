@@ -12,8 +12,63 @@ import (
 	"time"
 
 	"github.com/jedib0t/go-pretty/table"
+	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 )
+
+//Get a column
+func (ts TimeSeries) Get(colname string) []float64 {
+	return ts.Columns[colname]
+}
+
+//GetIndex of series
+func (ts TimeSeries) GetIndex() []time.Time {
+	return ts.Index
+}
+
+//GetDataPointAtIndex returns a DataPoint at the index which can be either {time.Time, int, string}
+func (ts TimeSeries) GetDataPointAtIndex(index interface{}) DataPoint {
+	dp := NewDataPoint()
+	switch index.(type) {
+	case string:
+		d, err := parseDate(index.(string))
+		if err != nil {
+			fmt.Println("parse date failed for getdatapoint:", err)
+			return dp
+		}
+		i := ts.IndexOfTime(d)
+		if i < 0 {
+			fmt.Println("getdatapoint: did not find time in timeseries-", d)
+			return dp
+		}
+		dp.Index = ts.Index[i]
+		for k := range ts.Columns {
+			dp.Columns[k] = ts.Columns[k][i]
+		}
+	case time.Time:
+		i := ts.IndexOfTime(index.(time.Time))
+		if i < 0 {
+			fmt.Println("getdatapoint: did not find time in timeseries-", i)
+			return dp
+		}
+		dp.Index = ts.Index[i]
+		for k := range ts.Columns {
+			dp.Columns[k] = ts.Columns[k][i]
+		}
+	case int:
+		var i int
+		if index.(int) < 0 {
+			i = index.(int) + ts.Length()
+		} else {
+			i = index.(int)
+		}
+		dp.Index = ts.Index[i]
+		for k := range ts.Columns {
+			dp.Columns[k] = ts.Columns[k][i]
+		}
+	}
+	return dp
+}
 
 //WriteToSetter writes a TimeSeries to any other type with a Set and SetIndex method
 func (ts TimeSeries) WriteToSetter(dst TableSetter) TableSetter {
@@ -26,7 +81,12 @@ func (ts TimeSeries) WriteToSetter(dst TableSetter) TableSetter {
 
 //utility func
 func (ts TimeSeries) writeCsv(path string) error {
-	filename := filepath.Join(path, ts.Start().String()[:len(ts.Start().String())-10]+" "+ts.End().String()[:len(ts.Start().String())-10]+".csv")
+	var filename string
+	if path[len(path)-3:] != "csv" {
+		filename = filepath.Join(path, ts.Start().String()[:len(ts.Start().String())-10]+" "+ts.End().String()[:len(ts.Start().String())-10]+".csv")
+	} else {
+		filename = path
+	}
 	f, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -48,7 +108,12 @@ func (ts TimeSeries) writeCsv(path string) error {
 }
 
 func (ts TimeSeries) writeJSON(path string) error {
-	filename := filepath.Join(path, ts.Start().String()[:len(ts.Start().String())-10]+" "+ts.End().String()[:len(ts.Start().String())-10]+".json")
+	var filename string
+	if path[len(path)-4:] != "json" {
+		filename = filepath.Join(path, ts.Start().String()[:len(ts.Start().String())-10]+" "+ts.End().String()[:len(ts.Start().String())-10]+".csv")
+	} else {
+		filename = path
+	}
 	f, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -88,8 +153,8 @@ func (ts TimeSeries) WriteAsJSON(folderpath string, pageSize ...int) error {
 	return nil
 }
 
-//WriteAsCsv writes timeseries to disk as csv
-func (ts TimeSeries) WriteAsCsv(folderpath string, pageSize ...int) error {
+//WriteAsCSV writes timeseries to disk as csv
+func (ts TimeSeries) WriteAsCSV(folderpath string, pageSize ...int) error {
 	_, err := os.Stat(folderpath)
 	if err != nil {
 		err := os.Mkdir(folderpath, 0766)
@@ -105,6 +170,55 @@ func (ts TimeSeries) WriteAsCsv(folderpath string, pageSize ...int) error {
 			t.writeCsv(folderpath)
 		}
 	}
+	return nil
+}
+
+//AppendToCSV opens `path` as CSV, writes to end, only supports OHLCV
+//it also wont write column names
+func (ts TimeSeries) AppendToCSV(path string, fromIndex ...interface{}) error {
+	if fromIndex != nil {
+		var err error
+		ts, err = ts.Slice(fromIndex, ts.Length())
+		if err != nil {
+			return err
+		}
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0755)
+	if err != nil {
+		return err
+	}
+	writer := csv.NewWriter(f)
+	defer f.Close()
+	defer writer.Flush()
+	columns := append([]string{"timestamp"}, "open", "high", "low", "close", "volume")
+	writer.Write([]string{})
+	for i, t := range ts.Index {
+		datapoint := make([]string, 0)
+		datapoint = append(datapoint, t.String()[:len(t.String())-10])
+		for _, col := range columns[1:] {
+			datapoint = append(datapoint, strconv.FormatFloat(ts.Columns[col][i], 'f', 4, 64))
+		}
+		writer.Write(datapoint)
+	}
+	return nil
+}
+
+func (ts TimeSeries) AppendDataPointToCSV(path string, dp DataPoint) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0755)
+	if err != nil {
+		return err
+	}
+	writer := csv.NewWriter(f)
+	defer f.Close()
+	defer writer.Flush()
+	columns := append([]string{"timestamp"}, "open", "high", "low", "close", "volume")
+	writer.Write([]string{})
+	datapoint := make([]string, 0)
+	datapoint = append(datapoint, dp.Index.String()[:len(dp.Index.String())-10])
+	for _, col := range columns[1:] {
+		datapoint = append(datapoint, strconv.FormatFloat(dp.Columns[col], 'f', 4, 64))
+	}
+	writer.Write(datapoint)
 	return nil
 }
 
@@ -145,20 +259,87 @@ func (ts TimeSeries) IsEmpty() bool {
 	return false
 }
 
-//Validate equal lengths of all columns
-func (ts TimeSeries) Validate() error {
+//IndexOfTime returns index of time provided. searches linearly
+//if time not in index, return -1
+func (ts TimeSeries) IndexOfTime(t interface{}) int {
+	switch t.(type) {
+	case time.Time:
+		for i, v := range ts.Index {
+			if v.Equal(t.(time.Time)) {
+				return i
+			}
+		}
+		return -1
+	case string:
+		t, err := parseDate(t.(string))
+		if err != nil {
+			logrus.Errorln("could not find index at time:", err)
+		}
+		for i, v := range ts.Index {
+			if v.Equal(t) {
+				return i
+			}
+		}
+		return -1
+	default:
+		logrus.Errorln("could not find index: invalid type for time")
+		return -1
+	}
+}
+
+//Validate equal lengths of all columns, withNonCritical is default false
+func (ts TimeSeries) Validate(withNonCritical ...bool) error {
+	var logAll bool
+	if withNonCritical != nil {
+		logAll = withNonCritical[0]
+	}
+	zeroRows := []time.Time{}
+	zeroCols := []string{}
 	for k := range ts.Columns {
 		if len(ts.Columns[k]) != len(ts.Index) {
 			log.Fatalln("validation failed: TimeSeries column lengths do not match! cannot recover")
 		}
-	}
-	for k := range ts.Index {
-		if k != 0 {
-			if ts.Index[k].Before(ts.Index[k-1]) {
-				log.Warnln("validation warning: unsorted time Index")
+		isZeroColumn := true
+		for _, j := range ts.Columns[k] {
+			if j != 0 {
+				isZeroColumn = false
+				break
 			}
-			if ts.Index[k].Equal(ts.Index[k-1]) {
-				log.Warnf("validation warning: duplicate Index keys found for %s\n", ts.Index[k].String())
+		}
+		if isZeroColumn {
+			zeroCols = append(zeroCols, k)
+		}
+	}
+	if logAll {
+		for k := range ts.Index {
+			if k != 0 {
+				if ts.Index[k].Before(ts.Index[k-1]) {
+					log.Warnln("validation warning: unsorted time Index: run ts.Sort()")
+				}
+				if ts.Index[k].Equal(ts.Index[k-1]) {
+					log.Warnf("validation warning: duplicate Index keys found for %s\n", ts.Index[k].String())
+				}
+			}
+			isZeroRow := true
+			for col := range ts.Columns {
+				if ts.Columns[col][k] != 0 {
+					isZeroRow = false
+					break
+				}
+			}
+			if isZeroRow {
+				zeroRows = append(zeroRows, ts.Index[k])
+			}
+
+		}
+		if len(zeroRows) != 0 {
+			for _, row := range zeroRows {
+				logrus.Warnf("validation warning: row at index %v is empty/all zeroes\n", row)
+			}
+		}
+		if len(zeroCols) != 0 {
+			for _, col := range zeroCols {
+				logrus.Warnf("validation warning: column %v is empty/all zeroes\n", col)
 			}
 		}
 	}
@@ -331,8 +512,16 @@ func (ts TimeSeries) SplitByDay() []TimeSeries {
 }
 
 //Slice can slice either by integer or time.Time
-func (ts TimeSeries) Slice(lower, upper interface{}) (TimeSeries, error) {
+func (ts TimeSeries) Slice(i1 interface{}, i2 ...interface{}) (TimeSeries, error) {
 	var lowerIndex, upperIndex int
+	var lower, upper interface{}
+	lower = i1
+	if i2 == nil {
+		upper = int(-1)
+	} else {
+		upper = i2[0]
+	}
+
 	switch lower.(type) {
 	case int:
 		lowerIndex = lower.(int)
@@ -384,25 +573,20 @@ func (ts TimeSeries) Slice(lower, upper interface{}) (TimeSeries, error) {
 				break
 			}
 		}
-		if upperIndex == 0 {
-			upperIndex = len(ts.Index) - 1
-		}
 	default:
 		log.Errorf("invalid type for upper bound while slicing TimeSeries: `%v`", upper)
 		return NewTimeSeries(), fmt.Errorf("invalid type for upper bound while slicing TimeSeries: `%v`", upper)
 	}
 
+	if lowerIndex > upperIndex {
+		upperIndex, lowerIndex = lowerIndex, upperIndex
+	}
+
 	if lowerIndex < 0 {
-		lowerIndex = len(ts.Index) + lowerIndex + 1
+		lowerIndex = len(ts.Index) + lowerIndex
 	}
 	if upperIndex < 0 {
 		upperIndex = len(ts.Index) + upperIndex + 1
-	}
-
-	if lowerIndex > upperIndex {
-		swap := upperIndex
-		upperIndex = lowerIndex
-		lowerIndex = swap
 	}
 
 	SlicedTimeSeries := NewTimeSeries()
@@ -564,7 +748,7 @@ func (ts TimeSeries) Print(level ...int) {
 		return
 	}
 	printUp, _ := ts.Slice(0, printLevel)
-	printDown, _ := ts.Slice(-1-printLevel, -1)
+	printDown, _ := ts.Slice(-printLevel-1, -1)
 	var allRows []table.Row
 	for k := range printUp.Index {
 		var row = table.Row{printUp.Index[k]}
@@ -588,10 +772,30 @@ func (ts TimeSeries) Print(level ...int) {
 			}
 		}
 		allRows = append(allRows, row)
-
 	}
 	t.AppendRows(allRows)
 	t.AppendSeparator()
 	t.Render()
 	return
+}
+
+//Print a datapoint pretty pretty
+func (dp DataPoint) Print() {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleLight)
+	titles := table.Row{"timestamp"}
+	for k := range dp.Columns {
+		titles = append(titles, k)
+	}
+	t.AppendHeader(titles)
+	row := table.Row{}
+	row = append(row, dp.Index)
+	for _, col := range titles {
+		if col.(string) != "timestamp" {
+			row = append(row, dp.Columns[col.(string)])
+		}
+	}
+	t.AppendRow(row)
+	t.Render()
 }

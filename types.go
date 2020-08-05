@@ -11,23 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gocarina/gocsv"
 	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 )
-
-//PrintLevel is used to designate table printing depth.
-// var PrintLevel = 5
-
-// //ColumnGetter is any type implementing a get function returning a numeric array
-// type ColumnGetter interface {
-// 	Get(string) ([]float64, error)
-// }
-
-// //IndexGetter implements a method to retrieve the []time.Time index of a type
-// type IndexGetter interface {
-// 	GetIndex() ([]time.Time, error)
-// }
 
 //TableGetter is timeseries getter.
 type TableGetter interface {
@@ -36,27 +22,11 @@ type TableGetter interface {
 	ListColumns() []string //is this necessary?
 }
 
-// //ColumnSetter sets a column
-// type ColumnSetter interface {
-//
-// }
-
-// //IndexSetter selfexplanatory
-// type IndexSetter interface {
-//
-// }
-
 //TableSetter is timeseries setter, numeric columns with time index
 type TableSetter interface {
 	SetIndex([]time.Time) error
 	Set(string, []float64) error
 }
-
-// //Table can set and get
-// type Table interface {
-// 	TableGetter
-// 	TableSetter
-// }
 
 //yahoo for data from yahoo finance
 type yahoo struct {
@@ -170,71 +140,42 @@ func NewTimeSeriesFromFile(filepath string, sourceSchema ...string) (TimeSeries,
 
 	switch filepath[len(filepath)-4:] {
 	case ".csv":
-		if schema == "yahoo" {
-			var data yahoo
-			gocsv.UnmarshalBytes(file, &data)
-			index, err := parseDateArray(data.Date)
-			if err != nil {
-				logrus.Errorln("date parse failed while loading timeseries from file: ", err)
+		f, err := os.Open(filepath)
+		defer f.Close()
+		if err != nil {
+			return ts, err
+		}
+		csvdata := csv.NewReader(f)
+		columnNames, err := csvdata.Read()
+		var indexCol int
+		for index, col := range columnNames {
+			columnNames[index] = strings.ToLower(col)
+			if strings.Contains(col, "date") || strings.Contains(col, "time") {
+				indexCol = index
+				break
 			}
-			ts.Index = index
-			ts.Columns["open"] = data.Open
-			ts.Columns["high"] = data.High
-			ts.Columns["low"] = data.Low
-			ts.Columns["close"] = data.Close
-			ts.Columns["volume"] = data.Volume
-		} else if schema == "generic" {
-			var data generic
-			gocsv.UnmarshalBytes(file, &data)
-			fmt.Println(data.Date[0])
-			index, err := parseDateArray(data.Date)
-			if err != nil {
-				logrus.Errorln("date parse failed while loading timeseries from file: ", err)
-			}
-			ts.Index = index
-			ts.Columns["open"] = data.Open
-			ts.Columns["high"] = data.High
-			ts.Columns["low"] = data.Low
-			ts.Columns["close"] = data.Close
-			ts.Columns["volume"] = data.Volume
-		} else if schema == "auto" {
-			f, err := os.Open(filepath)
-			defer f.Close()
-			if err != nil {
-				return ts, err
-			}
-			csvdata := csv.NewReader(f)
-			columnNames, err := csvdata.Read()
-			var indexCol int
-			for index, col := range columnNames {
-				columnNames[index] = strings.ToLower(col)
-				if strings.Contains(col, "date") || strings.Contains(col, "time") {
-					indexCol = index
-					break
-				}
-			}
-			columns, err := csvdata.ReadAll()
-			if err != nil {
-				return ts, err
-			}
-			for i := range columns {
-				for j := range columns[i] {
-					if j == indexCol {
-						datapoint, err := parseDate(columns[i][j])
-						if err != nil {
-							logrus.Errorln("date parse failed while loading timeseries from file: ", err)
-						}
-						ts.Index = append(ts.Index, datapoint)
-					} else {
-						if columns[i][j] == "" {
-							continue
-						}
-						datapoint, err := strconv.ParseFloat(columns[i][j], 64)
-						if err != nil {
-							logrus.Errorln("float parse failed while loading timeseries from file: ", err)
-						}
-						ts.Columns[columnNames[j]] = append(ts.Columns[columnNames[j]], datapoint)
+		}
+		columns, err := csvdata.ReadAll()
+		if err != nil {
+			return ts, err
+		}
+		for i := range columns {
+			for j := range columns[i] {
+				if j == indexCol {
+					datapoint, err := parseDate(columns[i][j])
+					if err != nil {
+						logrus.Errorln("date parse failed while loading timeseries from file: ", err)
 					}
+					ts.Index = append(ts.Index, datapoint)
+				} else {
+					if columns[i][j] == "" {
+						columns[i][j] = "0"
+					}
+					datapoint, err := strconv.ParseFloat(columns[i][j], 64)
+					if err != nil {
+						logrus.Errorln("float parse failed while loading timeseries from file at index ", i, j, err)
+					}
+					ts.Columns[columnNames[j]] = append(ts.Columns[columnNames[j]], datapoint)
 				}
 			}
 		}
@@ -300,6 +241,8 @@ func NewTimeSeriesFromFile(filepath string, sourceSchema ...string) (TimeSeries,
 		logrus.Errorln("load failed, probably wrong schema provided")
 		return ts, fmt.Errorf("load failed, probably wrong schema provided")
 	}
+	ts.changes = append(ts.changes, changelog{"load", ts.End(), ts.Start(), ts.End(), true})
+
 	return ts, nil
 }
 
@@ -330,6 +273,7 @@ func NewTimeSeriesFromDirectory(directory string, sourceSchema ...string) (TimeS
 			return NewTimeSeries(), err
 		}
 	}
+	ts.changes = append(ts.changes, changelog{"load", ts.End(), ts.Start(), ts.End(), true})
 	return ts, nil
 }
 
@@ -352,6 +296,7 @@ func NewTimeSeriesFromData(timeindex interface{}, columns map[string][]float64) 
 	for name, data := range columns {
 		ts.Columns[name] = data
 	}
+	ts.changes = append(ts.changes, changelog{"load", ts.End(), ts.Start(), ts.End(), true})
 	return ts, nil
 }
 
