@@ -16,6 +16,21 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+//SetMaxSize sets a max size for timeseries
+//if maxsize exceeded older timeindexes are dropped
+func (ts TimeSeries) SetMaxSize(size int) TimeSeries {
+	if ts.Length() < size {
+		return ts
+	}
+	ts, err := ts.Slice(-size)
+	if err != nil {
+		fmt.Println(err)
+		return ts
+	}
+	ts.MaxSize = size
+	return ts
+}
+
 //Get a column
 func (ts TimeSeries) Get(colname string) []float64 {
 	return ts.Columns[colname]
@@ -203,6 +218,7 @@ func (ts TimeSeries) AppendToCSV(path string, fromIndex ...interface{}) error {
 	return nil
 }
 
+//AppendDataPointToCSV appends a single datapoint to a csv on disk
 func (ts TimeSeries) AppendDataPointToCSV(path string, dp DataPoint) error {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0755)
 	if err != nil {
@@ -578,17 +594,15 @@ func (ts TimeSeries) Slice(i1 interface{}, i2 ...interface{}) (TimeSeries, error
 		return NewTimeSeries(), fmt.Errorf("invalid type for upper bound while slicing TimeSeries: `%v`", upper)
 	}
 
-	if lowerIndex > upperIndex {
-		upperIndex, lowerIndex = lowerIndex, upperIndex
-	}
-
 	if lowerIndex < 0 {
 		lowerIndex = len(ts.Index) + lowerIndex
 	}
 	if upperIndex < 0 {
 		upperIndex = len(ts.Index) + upperIndex + 1
 	}
-
+	if lowerIndex > upperIndex {
+		upperIndex, lowerIndex = lowerIndex, upperIndex
+	}
 	SlicedTimeSeries := NewTimeSeries()
 	SlicedTimeSeries.Index = ts.Index[lowerIndex:upperIndex]
 	for k, v := range ts.Columns {
@@ -619,6 +633,9 @@ func (ts TimeSeries) Append(ts1 TimeSeries) (TimeSeries, error) {
 			return ts, fmt.Errorf("Append failed: column `%s` in ts1 but not in ts2", col)
 		}
 	}
+	if ts.MaxSize != 0 {
+		ts = ts.SetMaxSize(ts.MaxSize)
+	}
 	return ts, ts.Validate()
 }
 
@@ -633,7 +650,9 @@ func (ts TimeSeries) AppendDataPoint(dp DataPoint) (TimeSeries, error) {
 	}
 	for k, v := range dp.Columns {
 		ts.Columns[k] = append(ts.Columns[k], v)
-
+	}
+	if ts.MaxSize != 0 {
+		ts = ts.SetMaxSize(ts.MaxSize)
 	}
 	return ts, ts.Validate()
 }
@@ -708,25 +727,34 @@ func (ts TimeSeries) FilterByTruthTable(truthArray []bool, matchingBool bool) (T
 	return matchedTs, matchingIndices
 }
 
-// func (ts TimeSeries) Reduce(fn func(float64, float64) float64, columns ...string) {
-
-// }
+//DropEmptyColumns removes empty columns
+func (ts *TimeSeries) DropEmptyColumns() {
+	for k, v := range ts.Columns {
+		if len(v) == 0 {
+			delete(ts.Columns, k)
+		}
+	}
+}
 
 //Print prints nicely, level indicates how many columns up/down to print
 //default 5
 func (ts TimeSeries) Print(level ...int) {
+	ts.DropEmptyColumns()
 	var printLevel int
 	if level != nil {
 		printLevel = level[0]
 	} else {
 		printLevel = 5
 	}
+
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetStyle(table.StyleLight)
 	titles := table.Row{"timestamp"}
 	for k := range ts.Columns {
-		titles = append(titles, k)
+		if len(ts.Columns[k]) > 0 {
+			titles = append(titles, k)
+		}
 	}
 	t.AppendHeader(titles)
 

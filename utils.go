@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-var regexDuration, _ = regexp.Compile("[0-9]+[a-zA-Z]{1}")
-
 // var regexDate, _ = regexp.Compile("[0-9]{4}-[0-9]{2}-[0-9]{2}")
 // var regexTime, _ = regexp.Compile("[0-9]{2}:[0-9]{2}:[0-9]{2}")
 
@@ -102,6 +100,8 @@ func parseDateArray(dates []string) ([]time.Time, error) {
 	return d, nil
 }
 
+var regexDuration, _ = regexp.Compile("[0-9]+[a-zA-Z]{1}")
+
 //ParseInterval can be minute, hour, day
 //If absolute is set, it wont parse or check. Just direct convert.
 //Max is 1 week, because month is not rigorously defined.
@@ -111,10 +111,22 @@ func parseInterval(interval string, absolute ...bool) (time.Duration, error) {
 	}
 	match := regexDuration.FindString(interval)
 	if match == "" {
+		switch interval {
+		case "hour":
+			return time.ParseDuration("1h")
+		case "minute":
+			return time.ParseDuration("1m")
+		case "day":
+			return time.ParseDuration("24h")
+		}
 		d, _ := time.ParseDuration("0s")
 		return d, fmt.Errorf("parsing interval %v failed.. max interval is hour", interval)
 	}
 	switch match[len(match)-1] {
+	case 'h':
+		if len(match) == 2 {
+			match = "1h"
+		}
 	case 'd':
 		hours, _ := strconv.Atoi(match[:len(match)-1])
 		match = strconv.Itoa(hours*24) + "h"

@@ -90,7 +90,7 @@ type changelog struct {
 type TimeSeries struct {
 	Index   []time.Time `json:"index"`
 	Columns map[string][]float64
-	MaxSize int64
+	MaxSize int
 	Meta    map[string]string
 	changes []changelog
 }
@@ -242,7 +242,27 @@ func NewTimeSeriesFromFile(filepath string, sourceSchema ...string) (TimeSeries,
 		return ts, fmt.Errorf("load failed, probably wrong schema provided")
 	}
 	ts.changes = append(ts.changes, changelog{"load", ts.End(), ts.Start(), ts.End(), true})
-
+	// for col := range ts.Columns {
+	// 	allzero := true
+	// 	for i := 0; i < len(ts.Columns[col]); i++ {
+	// 		if ts.Columns[col][i] != 0 {
+	// 			allzero = false
+	// 		}
+	// 	}
+	// 	if allzero {
+	// 		continue
+	// 	}
+	// 	for i := 0; i < len(ts.Columns[col])-2; {
+	// 		if ts.Columns[col][i+1] == 0 && col != "volume" {
+	// 			substitute := ts.Columns[col][i]
+	// 			for ts.Columns[col][i+1] == 0 {
+	// 				ts.Columns[col][i+1] = substitute
+	// 				i++
+	// 			}
+	// 		}
+	// 		i++
+	// 	}
+	//}
 	return ts, nil
 }
 
