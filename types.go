@@ -1,10 +1,12 @@
 package timeseries
 
 import (
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -118,6 +120,67 @@ func NewTimeSeriesFromGetter(ts ...TableGetter) TimeSeries {
 		}
 	}
 	return emptyts
+}
+
+//NewTimeSeriesFromCSV reads a CSV file, if offset is provided, those many bytes are read from EOF
+func NewTimeSeriesFromCSV(filepath string, offset ...int64) (TimeSeries, error) {
+	stat, err := os.Stat(filepath)
+	if err != nil {
+		return TimeSeries{}, err
+	}
+	logrus.Infof("Total file size: %v KB", stat.Size()/1024)
+	if offset == nil || float64(stat.Size()) < math.Abs(float64(offset[0])) {
+		logrus.Infof("Reading entire file: %v KB", stat.Size()/1024)
+		return NewTimeSeriesFromFile(filepath)
+	}
+	logrus.Infof("Reading last %v KB...", math.Abs(float64(offset[0]))/1024)
+	ts := NewTimeSeries()
+	file, _ := os.Open(filepath)
+
+	columnNames, err := csv.NewReader(file).Read()
+	if offset[0] > 0 {
+		offset[0] = -offset[0]
+	}
+	file.Seek(offset[0], 2)
+	eol := make([]byte, 0) //find end of line
+	for !bytes.Contains(eol, []byte("\n")) {
+		b := make([]byte, 1)
+		file.Read(b)
+		eol = append(eol, b...)
+	}
+	columns, err := csv.NewReader(file).ReadAll()
+	if err != nil {
+		return TimeSeries{}, err
+	}
+	var indexCol int
+	for index, col := range columnNames {
+		columnNames[index] = strings.ToLower(col)
+		if strings.Contains(col, "date") || strings.Contains(col, "time") {
+			indexCol = index
+			break
+		}
+	}
+	for i := range columns {
+		for j := range columns[i] {
+			if j == indexCol {
+				datapoint, err := parseDate(columns[i][j])
+				if err != nil {
+					logrus.Errorln("date parse failed while loading timeseries from file: ", err)
+				}
+				ts.Index = append(ts.Index, datapoint)
+			} else {
+				if columns[i][j] == "" {
+					columns[i][j] = "0"
+				}
+				datapoint, err := strconv.ParseFloat(columns[i][j], 64)
+				if err != nil {
+					logrus.Errorln("float parse failed while loading timeseries from file at index ", i, j, err)
+				}
+				ts.Columns[columnNames[j]] = append(ts.Columns[columnNames[j]], datapoint)
+			}
+		}
+	}
+	return ts, nil
 }
 
 //NewTimeSeriesFromFile reads a json or csv file.

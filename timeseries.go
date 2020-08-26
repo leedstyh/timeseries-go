@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jedib0t/go-pretty/table"
@@ -186,6 +187,31 @@ func (ts TimeSeries) WriteAsCSV(folderpath string, pageSize ...int) error {
 		}
 	}
 	return nil
+}
+
+func (ts TimeSeries) GetWritableCSVBytes(writeColumns bool, columnOrder ...string) []byte {
+	buf := []byte{}
+	var columns []string
+	if columnOrder == nil {
+		columns = append([]string{"timestamp"}, ts.ListColumns()...)
+	} else {
+		columns = columnOrder
+	}
+	if writeColumns {
+		buf = append(buf, []byte(strings.Join(columns, ",")+"\n")...)
+	}
+	for i, t := range ts.Index {
+		datapoint := make([]string, 0)
+		for _, col := range columns {
+			if strings.Contains(col, "date") || strings.Contains(col, "time") {
+				datapoint = append(datapoint, t.String()[:len(t.String())-10])
+			} else {
+				datapoint = append(datapoint, strconv.FormatFloat(ts.Columns[col][i], 'f', 4, 64))
+			}
+		}
+		buf = append(buf, []byte(strings.Join(datapoint, ",")+"\n")...)
+	}
+	return buf
 }
 
 //AppendToCSV opens `path` as CSV, writes to end, only supports OHLCV
@@ -413,6 +439,9 @@ func (ts TimeSeries) Sort(by ...string) TimeSeries {
 
 //Resample converts source timeseries interval into different interval using criteria provided
 func (ts TimeSeries) Resample(interval string, criteriaMap ...map[string]string) (TimeSeries, error) {
+	if ts.Length() == 1 {
+		return ts, fmt.Errorf("couldnt resample: only one record found. need min 2")
+	}
 	targetDuration, err := parseInterval(interval) //convert string interval to duration
 	sourceDuration := ts.Index[1].Sub(ts.Index[0])
 	var applyMap map[string](func([]float64) float64)
